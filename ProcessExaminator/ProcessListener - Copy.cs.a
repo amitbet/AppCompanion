@@ -1,0 +1,222 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using Microsoft.Samples.Debugging.MdbgEngine;
+using Microsoft.Samples.Debugging.CorDebug;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+
+namespace ProcessExaminator
+{
+    public class ProcessListener
+    {
+        private bool m_blnIsListening = false;
+        private string m_strLastDumpFileName = null;
+        private string m_strLastLogFileName = null;
+        private MDbgEngine m_debugger = null;
+        public string LastLogFileName
+        {
+            get { return m_strLastLogFileName; }
+            set { m_strLastLogFileName = value; }
+        }
+        private string m_strDumpFileDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        private string m_strLogFileDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
+        public string LogFileDirectory
+        {
+            get { return m_strLogFileDirectory; }
+            set { m_strLogFileDirectory = value; }
+        }
+        private bool m_blnWriteDumpOnUncaughtExceptions = false;
+        private bool m_blnLogExceptions = false;
+
+        public bool LogExceptions
+        {
+            get { return m_blnLogExceptions; }
+            set
+            {
+                if (!m_blnIsListening)
+                    throw new Exception("call StartListening first to attach");
+
+                m_blnLogExceptions = value;
+                //open a new LogFile
+                if (m_blnLogExceptions)
+                {
+                    string timeString1 = DateTime.Now.ToString("dd~MM~yyyy HH_mm_ss(fff)");
+                    LastLogFileName = Path.Combine(LogFileDirectory, m_process.Name + timeString1 + ".log");
+                }
+            }
+        }
+
+        public bool WriteDumpOnUncaughtExceptions
+        {
+            get { return m_blnWriteDumpOnUncaughtExceptions; }
+            set
+            {
+                if (!m_blnIsListening)
+                    throw new Exception("call StartListening first to attach");
+
+                m_blnWriteDumpOnUncaughtExceptions = value;
+            }
+        }
+
+        public string DumpFileDirectory
+        {
+            get { return m_strDumpFileDirectory; }
+            set { m_strDumpFileDirectory = value; }
+        }
+
+        public string LastDumpFileName
+        {
+            get { return m_strLastDumpFileName; }
+
+        }
+        private PostCallbackEventHandler m_processEventHandler = null;
+        private MDbgProcess m_process = null;
+        int m_processId = -1;
+        public ProcessListener(int pid)
+        {
+
+            m_processId = pid;
+            //m_process = DebuggerUtils.AttachToProcess(pid, debugger);
+            //Init(m_process);
+        }
+
+        //public ProcessListener(MDbgProcess process)
+        //{
+        //    m_process = process;
+        //    Init(m_process);
+        //}
+
+        //private void Init(MDbgProcess process)
+        //{
+        //    RegisterToProcessEvents();
+        //}
+
+
+        public void StartListening()
+        {
+            m_debugger = new MDbgEngine();
+            m_process = null;
+            //Task t = Task.Factory.StartNew(() =>
+            //{
+
+            m_process = DebuggerUtils.AttachToProcess(m_processId, m_debugger);
+            //m_process.DebugMode = DebugModeFlag.Debug;
+
+            //m_process.Go().WaitOne();
+            //DebuggerUtils.DrainAttach(m_debugger, m_process);
+
+            m_process.Go();
+            //m_process.Go().WaitOne();
+            //m_process.Detach();
+            //m_debugger.Options.StopOnLogMessage = true;
+            m_debugger.Options.StopOnException = false;
+            m_debugger.Options.StopOnExceptionEnhanced = false;
+            //m_debugger.Options.StopOnUnhandledException = true;
+
+            if (m_processEventHandler == null)
+            {
+
+                m_blnIsListening = true;
+                m_processEventHandler = (sender, e) =>
+                {
+                    //if (e.CallbackType == ManagedCallbackType.OnBreakpoint)
+                    //m_process.Go().WaitOne();
+
+                    if (e.CallbackType == ManagedCallbackType.OnException)
+                    {
+                        if (LogExceptions)
+                        {
+                            //File.AppendAllText(LastLogFileName, DateTime.Now.ToString("dd\\MM\\yyyy mm:hh:ss.fff]") + DebuggerUtils.GetExceptionDescFromProcess(m_process) + "\n");
+                            try
+                            {
+                                Console.Out.WriteLine("----------------------------------------------------");
+                                Console.Out.WriteLine(DebuggerUtils.GetExceptionDescFromProcess(m_process));
+                                File.AppendAllText(LastLogFileName, "----------------------------------------------------\n" + DateTime.Now.ToString("dd\\MM\\yyyy mm:hh:ss.fff]") + DebuggerUtils.GetExceptionDescFromProcess(m_process) + "\n");
+                            }
+                            catch (Exception ex)
+                            {
+
+                            }
+                            //m_process.Go();
+                            //m_process.Go();
+                            //m_process.Go();
+                        }
+                    }
+
+                    if (e.CallbackType == ManagedCallbackType.OnException2)
+                    {
+                        string timeString = DateTime.Now.ToString("ddMMyyyy[mmhhss_fff]");
+
+                        if (WriteDumpOnUncaughtExceptions)
+                        {
+                            m_strLastDumpFileName = Path.Combine(m_strDumpFileDirectory, m_process.Name + timeString + ".dmp");
+                            DumpWriter.WriteDump(m_process.CorProcess.Id, m_strLastDumpFileName, DumpOptions.WithFullMemory);
+                        }
+                        else
+                        {
+                            //m_process.Go();
+                        }
+
+                        //ClrDump.CreateDump(process.CorProcess.Id, @"C:\temp.dmp", (int)MINIDUMP_TYPE.MiniDumpWithFullMemory, 0, IntPtr.Zero);
+                    }
+
+                    if (e.CallbackType == ManagedCallbackType.OnProcessExit)
+                        Environment.Exit(0);
+                };
+            }
+
+            m_process.PostDebugEvent += m_processEventHandler;
+            //});
+            //t.Wait();
+
+        }
+
+        /// <summary>
+        /// takes several callstack samples from the process over time and creates a call tree, where performance issues can be evaluated.
+        /// </summary>
+        /// <param name="onlyMainThread"></param>
+        /// <returns></returns>
+        public Dictionary<int, StackTreeNode> GetPerformanceSample(bool onlyMainThread = false)
+        {
+            ProcessSampler sampler = new ProcessSampler(onlyMainThread);
+            if (m_blnIsListening)
+            {
+                if (m_process.IsRunning)
+                    m_process.AsyncStop().WaitOne();
+
+                List<ProcessSample> sample = sampler.GetSample(m_process, 20, 200);
+
+                return sampler.CreateStackTrees(sample);
+            }
+            else
+            {
+                List<ProcessSample> sample = sampler.GetSample(m_processId, 20, 200);
+                return sampler.CreateStackTrees(sample);
+            }
+        }
+
+        public void StopListening()
+        {
+
+            if (m_process != null && m_process.IsAlive)
+            {
+                //remove event registrations
+                m_blnIsListening = false;
+                m_process.PostDebugEvent -= m_processEventHandler;
+                m_processEventHandler = null;
+
+                //detach from the process
+                m_process.Detach();
+
+            }
+
+        }
+
+
+    }
+}
